@@ -1,20 +1,7 @@
-// Copyright 2026 Universidad de los Andes.
-// Licensed under the Solderpad Hardware License, Version 0.51 (the "License");
-// you may not use this file except in compliance with the License.
-// SPDX-License-Identifier: SHL-0.51
+// Testbench del shifter de SLL (variante B flaca). Autoverificable.
 //
-// Course: Arquitectura de Computadores (2026)
-//
-// Authors:
-// - Grupo 13  <TODO: nombres y correos>
-//
-// tb_espino_shifter — Testbench unitario del shifter de
-// rtl/ext/espino_shifter.v.
-//
-// TODO: completar una vez que el shifter este implementado de verdad.
-// Casos minimos a cubrir: SLL/SRL/SRA, shamt=0 (no deberia cambiar nada),
-// shamt=31 (caso extremo), y operandos negativos para SRA (verificar
-// extension de signo).
+// Correr:  iverilog -g2012 -s tb_espino_shifter -o /tmp/tb_sh \
+//            rtl/ext/espino_shifter.v sim/tb_espino_shifter.v && vvp -n /tmp/tb_sh
 
 `timescale 1ns/1ps
 
@@ -35,16 +22,42 @@ module tb_espino_shifter;
     .result_o  (result)
   );
 
+  task check(
+    input [31:0] op,
+    input [4:0]  sh,
+    input [31:0] expected
+  );
+    begin
+      operand = op; shamt = sh; dir = 0; arith = 0;
+      #10;
+      if (result !== expected) begin
+        errors = errors + 1;
+        $display("FAIL: op=%h sh=%0d -> %h, esperado %h",
+                 op, sh, result, expected);
+      end
+    end
+  endtask
+
   initial begin
-    // TODO: casos de prueba reales, ej.:
-    // operand = 32'h0000_0001; shamt = 5'd4; dir = 1'b0; arith = 1'b0; #1;
-    // if (result !== 32'h0000_0010) begin
-    //   $display("FAIL SLL"); errors = errors + 1;
-    // end
+    // 5<<3 = 40 (el 8p de la senal)
+    check(32'd5,      5'd3,  32'd40);
+    // 1<<31 = bit mas alto
+    check(32'd1,      5'd31, 32'h8000_0000);
+    // x<<0 = x (sin desplazar)
+    check(32'hDEAD_BEEF, 5'd0, 32'hDEAD_BEEF);
+    // 200<<2 = 800 (multiplo de p para div6)
+    check(32'd200,     5'd2,  32'd800);
+    // 150<<5 = 4800 (multiplo de 32p, el mayor de div6)
+    check(32'd150,     5'd5,  32'd4800);
+    // 255<<5 = 8160 (peor caso del mayor multiplo)
+    check(32'd255,     5'd5,  32'd8160);
+    // 100<<4 = 1600
+    check(32'd100,     5'd4,  32'd1600);
+    // 0<<17 = 0
+    check(32'd0,       5'd17, 32'd0);
 
-    if (errors == 0) $display("Todos los tests de shifter pasaron.");
-    else              $display("%0d test(s) de shifter fallaron.", errors);
-
+    if (errors == 0) $display("ALL TESTS PASSED");
+    else             $display("FAILED: %0d errores", errors);
     $finish;
   end
 

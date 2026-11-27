@@ -6,40 +6,29 @@
 // Course: Arquitectura de Computadores (2026)
 //
 // Authors:
-// - Grupo 13  <TODO: nombres y correos>
+// - Grupo 13
 //
-// espino_shifter — Alternativa de hardware (seccion 3.3): shifter de
-// 32 bits, separado de la ALU para poder medirlo y sintetizarlo de forma
-// aislada antes de integrarlo.
+// espino_shifter_sll — Variante B "flaca" del shifter (seccion 3.3).
 //
-// DECISION PENDIENTE: la ALU actual (rtl/espino_core/espino_alu.v) ya
-// decodifica SLL/SRL/SRA pero los deja comentados y cae al "default"
-// (resultado = a+b). Integrar este modulo implica:
-//   1. Instanciarlo en espino_alu.v
-//   2. Reemplazar el default de SLL/SRL/SRA por su resultado real
-//   3. Elegir combinacional puro (barrel shifter: gasta mas LUTs, 0
-//      ciclos extra) vs. secuencial shift-by-1 repetido (menos LUTs, pero
-//      hasta 31 ciclos extra en el peor caso — probablemente inaceptable
-//      para el presupuesto de la Ronda 3, period T = 0.1 ms).
+// CONTEXTO MEDIDO: la version completa (SLL+SRL+SRA en paralelo) agrega
+// ~405 LUT4 y el SoC llega a 1485 LCs, 116% de los 1280 de la Go Board:
+// NO CABE. trade_s.s (variante B del software) solo usa slli (8p y los
+// multiplos de div6), por lo que esta version implementa SOLO SLL y
+// deja SRL/SRA en el default de la ALU (ADD), igual que la base.
 //
-// Medir despues de implementar: LUTs usadas (yosys stat) y si el camino
-// critico crece lo suficiente como para bajar la Fmax que reporta
-// nextpnr-ice40 respecto del baseline sin shifter.
+// Decision documentada: acelerar lo que el programa usa; el resto del
+// ISA queda como en la base. Costo objetivo: ~1 desplazador en lugar de 3.
 
 module espino_shifter (
   input  wire [31:0] operand_i,
   input  wire [4:0]  shamt_i,     // == operand_b_i[4:0] en la ALU
-  input  wire        dir_i,       // 0 = izquierda (SLL), 1 = derecha (SRL/SRA)
-  input  wire        arith_i,     // 1 = aritmetico (SRA); solo valido si dir_i=1
+  input  wire        dir_i,       // sin uso en esta version (SLL unicamente)
+  input  wire        arith_i,     // sin uso en esta version
   output wire [31:0] result_o
 );
 
-  // TODO: implementar el shifter real.
-  // Placeholder actual: passthrough (no desplaza), solo para que el
-  // modulo sea instanciable y sintetizable mientras se decide la
-  // estrategia (combinacional vs. secuencial).
-  assign result_o = operand_i;
+  assign result_o = operand_i << shamt_i;
 
-  wire _unused = &{1'b0, shamt_i, dir_i, arith_i};
+  wire _unused = &{1'b0, dir_i, arith_i};
 
 endmodule

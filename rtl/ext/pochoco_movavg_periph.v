@@ -6,32 +6,34 @@
 // Course: Arquitectura de Computadores (2026)
 //
 // Authors:
-// - Grupo 13  <TODO: nombres y correos>
+// - Grupo 13
 //
-// pochoco_movavg_periph — Alternativa de hardware (seccion 3.3):
-// periferico MMIO que mantiene una media movil en hardware, siguiendo el
-// mismo patron de offsets/señales que rtl/pochoco_periph.v y
-// rtl/pochoco_spi_slave.v (sel_i/req_i/we_i + case(off)).
+// pochoco_movavg_periph — Alternativa de hardware (seccion 3.3,
+// variante A): periferico MMIO que mantiene la ventana de 8 precios del
+// algoritmo de reversio a la media. Mismo patron de accesos que
+// rtl/pochoco_periph.v y rtl/pochoco_spi_slave.v.
 //
-// Offsets propuestos (TODO: confirmar que no choquen con el resto del
-// mapa de memoria MMIO — ver README.md, seccion "Memory Map"):
-//   +0x00 (W) PRICE_IN : escribir aqui el precio de cada tick
-//   +0x04 (R) AVG_OUT  : lee el promedio movil actualizado
-//   +0x08 (W) CTRL     : bit0 = reset de la ventana (opcional)
+// Mapa de registros (base propuesta 0x8002_0000, no choca con el SPI
+// que vive en 0x8001_0000 — verificar el decoder de pochoco_soc.v):
+//   +0x00 (W) PRICE_IN : escribir aqui el precio del tick. Suma el
+//                        precio nuevo, resta el mas antiguo y avanza
+//                        el puntero circular, todo en el mismo ciclo.
+//   +0x04 (R) SUM_OUT  : suma de los ultimos <=8 precios.
+//                        NOTA: devuelve la SUMA, no el promedio, porque
+//                        trade.s compara 8p contra suma +- umbral*8
+//                        (nunca divide). Con esto las decisiones son
+//                        bit a bit identicas a la version software.
+//   +0x08 (R) COUNT    : precios validos en la ventana (0 a 8); sustituye
+//                        al contador x10 de la version software.
+//   +0x0C (W) CTRL     : bit0 = reset de la ventana (suma=0, count=0).
 //
-// DECISION PENDIENTE (la importante): el tamano de la ventana.
-//   - Si es una potencia de 2 fija en tiempo de sintesis (8/16/32
-//     muestras), "dividir" es solo leer un rango de bits de la suma
-//     acumulada (ej. suma[W+2:3] para ventana de 8 con precios de 8
-//     bits) — no se necesita ningun shifter real, es casi gratis en LUTs.
-//   - Si se quiere ventana configurable en tiempo de ejecucion, se
-//     necesita un divisor real (mucho mas caro) o restringirse a
-//     potencias de 2 seleccionables (shift variable: mas barato que un
-//     divisor general, pero ya no es "gratis").
-// Documentar la eleccion final en docs/hardware_decisions.md.
+// Decision documentada (docs/hardware_decisions.md): ventana fija de
+// potencia de 2 (8), definida en sintesis, con buffer circular exacto
+// (no filtro exponencial), para replicar bit a bit la ventana del
+// software. El "promedio" nunca se calcula: se entrega la suma.
 
 module pochoco_movavg_periph #(
-  parameter WINDOW_LOG2 = 3   // ventana = 2**WINDOW_LOG2 muestras (TODO: ajustar)
+  parameter WINDOW_LOG2 = 3                 // ventana = 8 precios
 ) (
   input  wire        clk_i,
   input  wire        rst_ni,
@@ -43,29 +45,54 @@ module pochoco_movavg_periph #(
   output reg  [31:0] rdata_o
 );
 
+  localparam NUM = 1 << WINDOW_LOG2;         // 8
+  localparam PTR_W = WINDOW_LOG2;            // 3 bits: 0..7
+
+  // Suma de la ventana: 8 precios de 8 bits -> max 8*255 = 2040 (11 bits).
+  reg [31:0] sum;
+  reg [7:0]  samples [0:NUM-1];
+  reg [PTR_W-1:0] wr_ptr;
+  reg [3:0]  count;                          // 0..8
+
   wire [5:0] off    = addr_i[7:2];
   wire       access = sel_i & req_i;
+  wire       full   = (count == NUM);
 
-  // TODO: registro de suma acumulada (ancho = 8 + WINDOW_LOG2 bits para
-  // no hacer overflow con ventanas grandes) y, si se decide implementar
-  // una ventana deslizante exacta (no solo un filtro exponencial), el
-  // buffer circular de muestras que hay que restar al salir de la
-  // ventana. Documentar en hardware_decisions.md cual de las dos
-  // aproximaciones se eligio y por que.
+  wire [7:0] price_in = wdata_i[7:0];
 
   always @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      rdata_o <= 32'b0;
+      sum    <= 32'd0;
+      wr_ptr <= {PTR_W{1'b0}};
+      count  <= 4'd0;
+      rdata_o <= 32'd0;
     end else if (access & we_i) begin
       case (off)
-        6'd0: ; // TODO: PRICE_IN -> actualizar la suma acumulada
-        6'd2: ; // TODO: CTRL -> reset de ventana, si se implementa
+        6'd0: begin // PRICE_IN
+          if (!full) begin
+            sum <= sum + {24'd0, price_in};
+            count <= count + 4'd1;
+          end else begin
+            sum <= sum + {24'd0, price_in} - {24'd0, samples[wr_ptr]};
+          end
+          samples[wr_ptr] <= price_in;
+          wr_ptr <= (wr_ptr == NUM-1) ? {PTR_W{1'b0}} : wr_ptr + 1'b1;
+        end
+        6'd3: begin // CTRL: bit0 = reset de ventana
+          if (wdata_i[0]) begin
+            sum   <= 32'd0;
+            count <= 4'd0;
+            wr_ptr <= {PTR_W{1'b0}};
+          end
+        end
         default: ;
       endcase
+      rdata_o <= 32'd0;
     end else if (access & ~we_i) begin
       case (off)
-        6'd1: rdata_o <= 32'b0; // TODO: AVG_OUT = suma_acumulada >> WINDOW_LOG2
-        default: rdata_o <= 32'b0;
+        6'd1: rdata_o <= sum;                // SUM_OUT
+        6'd2: rdata_o <= {28'd0, count};     // COUNT
+        default: rdata_o <= 32'd0;
       endcase
     end
   end

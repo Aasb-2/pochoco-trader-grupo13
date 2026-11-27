@@ -12,7 +12,7 @@
 # (.gitignore ya excluye sim/sim y *.vcd como artefactos de simulacion)
 
 
-RTL   := $(wildcard ../rtl/*.v ../rtl/espino_core/*.v)
+RTL   := $(wildcard ../rtl/*.v ../rtl/ext/*.v ../rtl/espino_core/*.v)
 CELLS ?= $(shell yosys-config --datdir 2>/dev/null || echo /usr/share/yosys)/ice40/cells_sim.v
 
 IVFLAGS := -g2012

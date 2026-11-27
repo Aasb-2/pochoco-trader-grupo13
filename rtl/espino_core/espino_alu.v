@@ -4,9 +4,19 @@
 // SPDX-License-Identifier: SHL-0.51
 //
 // Course: Arquitectura de Computadores (2026)
-// 
+//
 // Authors:
-// - Nicolás Villegas <navillegas@miuandes.cl>
+// - Nicolas Villegas <navillegas@miuandes.cl> (base)
+// - Grupo 13 (variante B flaca: solo SLL en hardware)
+//
+// Variante B "flaca": SOLO ALU_SLL sale del default y usa el shifter.
+// SRL/SRA siguen en el default (ADD), como en la base: trade_s.s no las
+// usa. Con esto el SoC cabe en los 1280 LCs de la Go Board.
+//
+// COMPARATIVA MEDIDA (ver informe, seccion 3.4):
+//   base            :  909 LUT4, cabe
+//   B completa      : 1314 LUT4 -> 1485 LCs = 116%, NO CABE
+//   B flaca (esta)  :  ~1 desplazador, objetivo <= 1280 LCs
 
 module espino_alu (
   input  wire [3:0]  operator_i,
@@ -44,8 +54,19 @@ module espino_alu (
   // Comparisons
   wire cmp_eq, cmp_lt, cmp_ltu;
   assign cmp_eq  = (operand_a_i == operand_b_i);
-  assign cmp_lt  = (a_s < b_s);
+  assign cmp_lt = (a_s < b_s);
   assign cmp_ltu = (operand_a_i < operand_b_i);
+
+  // --- Variante B flaca: solo el desplazador a la izquierda ---
+  wire [31:0] shift_result;
+
+  espino_shifter u_espino_shifter (
+    .operand_i (operand_a_i),
+    .shamt_i   (shamt),
+    .dir_i     (1'b0),
+    .arith_i   (1'b0),
+    .result_o  (shift_result)
+  );
 
   always @* begin
     case (operator_i)
@@ -69,10 +90,9 @@ module espino_alu (
       ALU_AND:  result_o = operand_a_i & operand_b_i;
       ALU_SLT:  result_o = {31'b0, cmp_lt};
       ALU_SLTU: result_o = {31'b0, cmp_ltu};
-      // Shifts disabled to save LUTs
-      // ALU_SLL:  result_o = operand_a_i << shamt;
-      // ALU_SRL:  result_o = operand_a_i >> shamt;
-      // ALU_SRA:  result_o = a_s >>> shamt;
+      // Variante B flaca: solo SLL usa el shifter.
+      // SRL/SRA quedan en el default (ADD), igual que la base.
+      ALU_SLL:  result_o = shift_result;
       default:  result_o = operand_a_i + operand_b_i;
     endcase
   end
