@@ -26,56 +26,106 @@
 //      este probando, y repetir
 //   4. Volcar la secuencia de decisiones capturadas a un archivo para
 //      comparar contra la referencia en Python (ver scripts/)
-
 `timescale 1ns/1ps
 
 module tb_pochoco_soc;
 
-  reg        clk    = 0;
-  reg  [3:0] switch = 4'b0;
-  wire [3:0] led;
+  localparam CLK_HALF  = 20;
+  localparam SCLK_HALF = 500;
+  localparam PROF_W    = 256;
 
-  reg        spi_sclk = 0;
-  reg        spi_mosi  = 0;
-  reg        spi_cs_n  = 1;
-  wire       spi_miso;
+  reg clk = 0;
+  always #CLK_HALF clk = ~clk;
 
-  // 25 MHz -> periodo 40 ns
-  always #20 clk = ~clk;
+  reg  sclk = 0, mosi = 0, cs_n = 1;
+  wire miso;
+  wire [3:0] leds;
 
-  pochoco_soc #(
-    .MemFile("../sw/trade.hex")   // TODO: generar una vez trade.s este listo
-  ) dut (
-    .i_Clk        (clk),
-    .o_LED        (led),
-    .i_Switch     (switch),
-    .i_SPI_SCLK   (spi_sclk),
-    .i_SPI_MOSI   (spi_mosi),
-    .i_SPI_CS_n   (spi_cs_n),
-    .o_SPI_MISO   (spi_miso)
-    // TODO: conectar tambien los pines de 7-segmentos si se quieren
-    // observar en el VCD (no son necesarios para validar los datos)
+  pochoco_soc #(.MemFile("../sw/trade.hex")) dut (
+    .i_Clk(clk), .o_LED(leds), .i_Switch(4'b0),
+    .o_Segment1_A(), .o_Segment1_B(), .o_Segment1_C(), .o_Segment1_D(),
+    .o_Segment1_E(), .o_Segment1_F(), .o_Segment1_G(),
+    .o_Segment2_A(), .o_Segment2_B(), .o_Segment2_C(), .o_Segment2_D(),
+    .o_Segment2_E(), .o_Segment2_F(), .o_Segment2_G(),
+    .i_SPI_SCLK(sclk), .i_SPI_MOSI(mosi), .i_SPI_CS_n(cs_n), .o_SPI_MISO(miso)
   );
 
-  // TODO: tarea que envia un byte de precio por SPI y captura el byte de
-  // DECISION vigente en ese mismo ciclo (el que la maestra "leeria").
-  task spi_transfer(input [7:0] price_byte, output [7:0] decision_byte);
+  wire retire = dut.u_core.instr_valid_id & ~dut.u_core.stall;
+  wire got_px = dut.u_spi.byte_done;
+  wire dec_wr = dut.u_spi.wr & (dut.u_spi.off == 6'd2);
+
+  integer cyc = 0, ic = 0, midiendo = 0, overruns = 0;
+  integer last_cyc = 0, last_ic = 0;
+
+  integer prof_tot [0:PROF_W-1];
+  integer prof_cur [0:PROF_W-1];
+  integer prof_wst [0:PROF_W-1];
+  integer worst_cyc = -1, worst_k = -1, tick_n = 0, j;
+  reg  [7:0] pc_last = 0;
+  wire [7:0] pc_w = dut.u_core.instr_valid_id ? dut.u_core.pc_id[9:2] : pc_last;
+
+  initial for (j = 0; j < PROF_W; j = j + 1) begin
+    prof_tot[j] = 0; prof_cur[j] = 0; prof_wst[j] = 0;
+  end
+
+  always @(posedge clk) begin
+    if (dut.u_core.instr_valid_id) pc_last = dut.u_core.pc_id[9:2];
+    if (got_px) begin
+      if (midiendo) overruns = overruns + 1;
+      midiendo = 1; cyc = 0; ic = 0;
+    end else if (midiendo) begin
+      cyc = cyc + 1;
+      if (retire) ic = ic + 1;
+      prof_cur[pc_w] = prof_cur[pc_w] + 1;
+      if (dec_wr) begin
+        last_cyc = cyc; last_ic = ic; midiendo = 0;
+        for (j = 0; j < PROF_W; j = j + 1) begin
+          prof_tot[j] = prof_tot[j] + prof_cur[j];
+          if (cyc > worst_cyc) prof_wst[j] = prof_cur[j];
+          prof_cur[j] = 0;
+        end
+        if (cyc > worst_cyc) begin worst_cyc = cyc; worst_k = tick_n; end
+        tick_n = tick_n + 1;
+      end
+    end
+  end
+
+  task spi_byte(input [7:0] tx, output [7:0] rx);
+    integer b;
     begin
-      // TODO: bajar spi_cs_n, generar 8 flancos de spi_sclk desplazando
-      // price_byte por spi_mosi (MSB primero), muestreando spi_miso bit a
-      // bit en decision_byte, y subir spi_cs_n al terminar.
-      decision_byte = 8'h00;
+      cs_n = 0; #(SCLK_HALF);
+      for (b = 7; b >= 0; b = b - 1) begin
+        mosi = tx[b];           #(SCLK_HALF);
+        sclk = 1; rx[b] = miso; #(SCLK_HALF);
+        sclk = 0;
+      end
+      #(SCLK_HALF); cs_n = 1;
     end
   endtask
 
+  reg [7:0] prices [0:65535];
+  reg [7:0] rx;
+  integer k, nticks, t_ns;
+  reg [1023:0] pfile;
+
   initial begin
-    $dumpfile("tb_pochoco_soc.vcd");
-    $dumpvars(0, tb_pochoco_soc);
+    if (!$value$plusargs("PRICES=%s", pfile)) pfile = "practica.hex";
+    if (!$value$plusargs("NTICKS=%d", nticks)) nticks = 20000;
+    if (!$value$plusargs("T_NS=%d", t_ns))     t_ns = 100000;
+    $readmemh(pfile, prices);
 
-    // TODO: cargar la serie de precios, iterar spi_transfer() por cada
-    // tick respetando el periodo T de la ronda, y loguear las decisiones
-    // obtenidas para compararlas con sw/ref/trade_ref.py.
-
+    #(10_000);
+    for (k = 0; k <= nticks; k = k + 1) begin
+      spi_byte(k < nticks ? prices[k] : 8'h00, rx);
+      if (k > 0) $display("TICK %0d MISO %02h CYC %0d IC %0d",
+                          k - 1, rx, last_cyc, last_ic);
+      #(t_ns - 9 * 2 * SCLK_HALF);
+    end
+    for (j = 0; j < PROF_W; j = j + 1)
+      if (prof_tot[j] != 0)
+        $display("PROF %04h %0d %0d", j * 4, prof_tot[j], prof_wst[j]);
+    $display("WORST tick=%0d cyc=%0d", worst_k, worst_cyc);
+    $display("FIN ticks=%0d overruns=%0d", nticks, overruns);
     $finish;
   end
 

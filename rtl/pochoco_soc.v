@@ -8,9 +8,10 @@
 // Authors:
 // - Nicolás Villegas <navillegas@miuandes.cl>
 
+
 module pochoco_soc #(
   parameter NumWords   = 512,
-  parameter MemFile    = "../sw/blink.hex"
+  parameter MemFile    = "../sw/trade.hex"
 ) (
   input  wire       i_Clk,
 

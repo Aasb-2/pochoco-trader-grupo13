@@ -14,44 +14,38 @@ donde:
 """
 
 
-def amdahl_speedup(fraction_accelerated: float, part_speedup: float) -> float:
-    if not (0.0 <= fraction_accelerated <= 1.0):
-        raise ValueError("fraction_accelerated debe estar entre 0 y 1")
-    if part_speedup <= 0:
-        raise ValueError("part_speedup debe ser > 0")
-    f = fraction_accelerated
-    s = part_speedup
+MEDIDO = {
+    "Esperar y leer precio": {"prom": 0.191, "peor": 0.086},
+    "Espejo (decodificar)":  {"prom": 0.109, "peor": 0.145},
+    "Media movil":           {"prom": 0.323, "peor": 0.118},
+    "Senal y decision":      {"prom": 0.338, "peor": 0.134},
+    "Escribir DECISION":     {"prom": 0.031, "peor": 0.011},
+    "mul6":                  {"prom": 0.002, "peor": 0.000},
+    "div6":                  {"prom": 0.004, "peor": 0.505},
+}
+
+
+def amdahl_speedup(f, s):
+    if not 0.0 <= f <= 1.0:
+        raise ValueError("f debe estar entre 0 y 1")
+    if s <= 0:
+        raise ValueError("s debe ser > 0")
     return 1.0 / ((1.0 - f) + f / s)
 
 
-def max_possible_speedup(fraction_accelerated: float) -> float:
-    """Limite cuando s -> infinito (acelerar esa parte a costo cero)."""
-    return amdahl_speedup(fraction_accelerated, part_speedup=1e9)
+def max_possible_speedup(f):
+    return amdahl_speedup(f, 1e9)
 
 
-def required_speedup_for_target(fraction_accelerated: float, target_speedup: float) -> float:
-    """Dado un speedup global deseado, que speedup 's' de la parte
-    acelerable hace falta. Util para decidir si una alternativa de
-    hardware (con un speedup de parte conocido o estimado) alcanza para
-    cumplir el presupuesto de ciclos de una ronda."""
-    f = fraction_accelerated
-    if target_speedup <= 0:
-        raise ValueError("target_speedup debe ser > 0")
-    denom = (1.0 / target_speedup) - (1.0 - f)
+def required_speedup_for_target(f, target):
+    denom = (1.0 / target) - (1.0 - f)
     if denom <= 0:
-        raise ValueError(
-            "target_speedup no es alcanzable ni acelerando la parte a costo cero "
-            "(revisar f: puede que la fraccion acelerable sea muy baja)"
-        )
+        raise ValueError("objetivo inalcanzable incluso con s -> inf")
     return f / denom
 
 
 if __name__ == "__main__":
-    # TODO: reemplazar con los numeros reales medidos. Ejemplo de uso:
-    # f = fraccion de ciclos que hoy consume la aritmetica que reemplaza
-    #     al multiplicador/shifter faltante (medir con measure_cycles.py)
-    # s = speedup esperado de la alternativa de hardware bajo evaluacion
-    f = 0.0   # TODO
-    s = 1.0   # TODO
-    print(f"Speedup global estimado: {amdahl_speedup(f, s):.3f}x")
-    print(f"Speedup maximo posible (s->inf): {max_possible_speedup(f):.3f}x")
+    print(f"{'Seccion':24s} {'f prom':>7s} {'max prom':>9s} {'f peor':>7s} {'max peor':>9s}")
+    for n, f in MEDIDO.items():
+        print(f"{n:24s} {f['prom']:7.3f} {max_possible_speedup(f['prom']):8.2f}x "
+              f"{f['peor']:7.3f} {max_possible_speedup(f['peor']):8.2f}x")

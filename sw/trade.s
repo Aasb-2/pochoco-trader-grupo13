@@ -41,36 +41,169 @@
 #   x5  : decision calculada
 #   x1, x6-x15 : libres para las necesidades del algoritmo
 
-.section .text
-.global _start
+    .equ COMISION, 5
+    .equ CAJA0,    10000
+    .equ N,        8
+    .equ UMB_C,    24
+    .equ UMB_V,    16
+
+    .section .text
+    .global _start
 
 _start:
-    lui  x2, 0x80010          # x2 = 0x80010000 (base SPI)
-    addi x3, x0, 0             # x3 = estado inicial del algoritmo
-                                 # TODO: inicializar representacion de punto fijo
+    lui  x2, 0x80010
+    addi x3, x0, 0
+    lui  x6, %hi(CAJA0)
+    addi x6, x6, %lo(CAJA0)
+    addi x7, x0, 0
+    addi x8, x0, 0
+    addi x9, x0, %lo(ventana)
+    addi x10, x0, 0
 
 main_loop:
-    # --- 1. Sondear STATUS hasta new_price=1 ---
-poll_status:
-    lw   x1, 0(x2)              # x1 = STATUS
-    andi x1, x1, 1              # bit0 = new_price
-    beq  x1, x0, poll_status
+poll:
+    lw   x5, 0(x2)
+    andi x5, x5, 1
+    beq  x5, x0, poll
+    lw   x4, 4(x2)
 
-    # --- 2. Leer PRICE (limpia new_price) ---
-    lw   x4, 4(x2)              # x4 = precio actual
+espejo:
+    andi x5, x8, 0xC0
+    andi x12, x8, 0x3F
+    beq  x5, x0, upd_ventana
+    addi x11, x0, 0x40
+    beq  x5, x11, exec_buy
+    addi x11, x0, 0x80
+    bne  x5, x11, upd_ventana
 
-    # --- 3. Actualizar estado interno ---
-    # TODO (seccion 3.1): actualizar x3 con el nuevo precio x4.
-    # Ejemplo de enfoque: mantener suma_acumulada en x3 y restar/sumar
-    # incrementalmente en vez de recorrer una ventana completa cada tick.
+exec_sell:
+    bge  x7, x12, 1f
+    add  x12, x7, x0
+1:  beq  x12, x0, upd_ventana
+    jal  x1, mul6
+    add  x6, x6, x13
+    addi x6, x6, -COMISION
+    sub  x7, x7, x12
+    jal  x0, upd_ventana
 
-    # --- 4. Calcular decision ---
-    # TODO (seccion 3.1): calcular x5 a partir de x3 (y/o x4).
-    # Decision de representacion: ¿que valores de x5 significan comprar /
-    # vender / mantener, y como se mapean al byte DECISION del protocolo?
-    addi x5, x0, 0              # placeholder: "mantener" (no operar)
+exec_buy:
+    add  x5, x12, x0
+    jal  x1, div6
+    bge  x5, x12, 2f
+    add  x12, x5, x0
+    jal  x1, mul6
+2:  beq  x12, x0, upd_ventana
+    sub  x6, x6, x13
+    addi x6, x6, -COMISION
+    add  x7, x7, x12
 
-    # --- 5. Escribir DECISION ---
+upd_ventana:
+    lw   x11, 0(x9)
+    sub  x3, x3, x11
+    add  x3, x3, x4
+    sw   x4, 0(x9)
+    addi x9, x9, 4
+    addi x11, x0, %lo(ventana_fin)
+    bne  x9, x11, 3f
+    addi x9, x0, %lo(ventana)
+3:  addi x11, x0, N
+    beq  x10, x11, senal
+    addi x10, x10, 1
+
+senal:
+    addi x5, x0, 0
+    addi x11, x0, N
+    bne  x10, x11, escribir
+    add  x13, x4, x4
+    add  x13, x13, x13
+    add  x13, x13, x13
+
+    addi x14, x3, -UMB_C
+    bge  x13, x14, 4f
+    addi x15, x6, -COMISION
+    blt  x15, x4, 4f
+    addi x5, x0, 0x7F
+    jal  x0, escribir
+
+4:  addi x14, x3, UMB_V
+    bge  x14, x13, escribir
+    beq  x7, x0, escribir
+    addi x15, x0, 63
+    add  x12, x7, x0
+    bge  x15, x12, 5f
+    add  x12, x15, x0
+5:  addi x5, x12, 0x80
+
+escribir:
     sw   x5, 8(x2)
-
+    add  x8, x5, x0
     jal  x0, main_loop
+
+# mul6: x13 = x12 * x4  (0 <= x12 <= 63). Usa x14, x15.
+    .macro MULBIT bit
+    andi x15, x12, \bit
+    beq  x15, x0, 9f
+    add  x13, x13, x14
+9:
+    .endm
+
+mul6:
+    addi x13, x0, 0
+    add  x14, x4, x0
+    MULBIT 1
+    add  x14, x14, x14
+    MULBIT 2
+    add  x14, x14, x14
+    MULBIT 4
+    add  x14, x14, x14
+    MULBIT 8
+    add  x14, x14, x14
+    MULBIT 16
+    add  x14, x14, x14
+    MULBIT 32
+    jalr x0, 0(x1)
+
+# div6: x12 = min(63, (caja-5)/p), x13 = x12 * p. Usa x11, x14, x15.
+    .macro DIVBIT bit
+    add  x15, x13, x11
+    blt  x14, x15, 9f
+    add  x13, x15, x0
+    addi x12, x12, \bit
+9:
+    .endm
+
+div6:
+    add  x11, x4, x0
+    sw   x11, %lo(tabla)+0(x0)
+    add  x11, x11, x11
+    sw   x11, %lo(tabla)+4(x0)
+    add  x11, x11, x11
+    sw   x11, %lo(tabla)+8(x0)
+    add  x11, x11, x11
+    sw   x11, %lo(tabla)+12(x0)
+    add  x11, x11, x11
+    sw   x11, %lo(tabla)+16(x0)
+    add  x11, x11, x11
+    addi x14, x6, -COMISION
+    addi x12, x0, 0
+    addi x13, x0, 0
+    DIVBIT 32
+    lw   x11, %lo(tabla)+16(x0)
+    DIVBIT 16
+    lw   x11, %lo(tabla)+12(x0)
+    DIVBIT 8
+    lw   x11, %lo(tabla)+8(x0)
+    DIVBIT 4
+    lw   x11, %lo(tabla)+4(x0)
+    DIVBIT 2
+    lw   x11, %lo(tabla)+0(x0)
+    DIVBIT 1
+    jalr x0, 0(x1)
+
+    .balign 4
+ventana:
+    .word 0, 0, 0, 0, 0, 0, 0, 0
+ventana_fin:
+tabla:
+    .word 0, 0, 0, 0, 0, 0
+

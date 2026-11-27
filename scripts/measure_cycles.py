@@ -18,46 +18,69 @@ nada todavia:
 (el pipeline de 2 etapas con lectura sincronica de memoria de
 instrucciones y banco de registros impone ese piso minimo de 2 ciclos
 por instruccion, mas 1 ciclo extra para loads y saltos tomados)
+
+
+
+measure_cycles.py - A partir del log de sim/tb_pochoco_soc.v:
+  1. Verifica bit a bit las decisiones (MISO) contra sw/ref/trade_ref.py.
+  2. Reporta IC, ciclos, CPI y tiempo por tick (promedio y peor caso).
+  3. Compara el peor caso con el presupuesto de cada ronda
+     (T menos la transaccion SPI de ~9 us y la sincronizacion).
+
+Uso: python3 scripts/measure_cycles.py sim/soc_log.txt sim/ref_dec.txt [--f-mhz 25]
+
 """
+import sys
 
-CYCLES_BASE = 2
-CYCLES_LOAD = 3
-CYCLES_TAKEN_BRANCH_OR_JUMP = 3
-
-
-def estimate_cpi(n_alu: int, n_load: int, n_taken_branch_or_jump: int) -> float:
-    """CPI esperado dado un conteo estatico o dinamico de instrucciones por
-    categoria. No reemplaza medir de verdad en simulacion, pero sirve para
-    una primera estimacion antes de tener el testbench corriendo."""
-    total_instr = n_alu + n_load + n_taken_branch_or_jump
-    if total_instr == 0:
-        return 0.0
-    total_cycles = (
-        n_alu * CYCLES_BASE
-        + n_load * CYCLES_LOAD
-        + n_taken_branch_or_jump * CYCLES_TAKEN_BRANCH_OR_JUMP
-    )
-    return total_cycles / total_instr
+SPI_US = 9.0
+SYNC_CYCLES = 3
+ROUNDS = {"Ronda 1": 10_000.0, "Ronda 2": 1_000.0, "Ronda 3": 100.0}
 
 
-def parse_log(path: str):
-    """TODO: parsear el log real que produzca sim/tb_pochoco_soc.v o
-    sim/tb_espino_core.v una vez que esos testbenches cuenten ciclos e
-    instrucciones de verdad (hoy son placeholders, ver TODOs en cada
-    archivo)."""
-    raise NotImplementedError
+def parse_log(path):
+    ticks = []
+    with open(path) as f:
+        for line in f:
+            t = line.split()
+            if t and t[0] == "TICK":
+                ticks.append({"k": int(t[1]), "miso": int(t[3], 16),
+                              "cyc": int(t[5]), "ic": int(t[7])})
+    return ticks
 
 
-def report_per_round(cycles_per_tick: dict, period_cycles: dict) -> None:
-    """TODO: comparar cycles_per_tick (caso promedio y peor caso, medidos)
-    contra el presupuesto de ciclos de cada ronda (period_cycles, en
-    ciclos de reloj) y reportar si el programa alcanza a tiempo."""
-    raise NotImplementedError
+def main():
+    argv = sys.argv[1:]
+    f_mhz = 25.0
+    if "--f-mhz" in argv:
+        i = argv.index("--f-mhz")
+        f_mhz = float(argv[i + 1])
+        del argv[i:i + 2]
+    ticks = parse_log(argv[0])
+
+    if len(argv) > 1:
+        ref = [int(l, 16) for l in open(argv[1]) if l.strip()]
+        n = min(len(ref), len(ticks))
+        bad = [i for i in range(n) if ref[i] != ticks[i]["miso"]]
+        print(f"Verificacion bit a bit: {'OK' if not bad else 'FALLA'} - {n} ticks, "
+              f"{len(bad)} diferencias" + (f" (primeras: {bad[:10]})" if bad else ""))
+        if bad:
+            sys.exit(1)
+
+    cyc = [t["cyc"] for t in ticks]
+    ic = [t["ic"] for t in ticks]
+    w = max(range(len(ticks)), key=lambda i: cyc[i])
+    prom_cyc, prom_ic = sum(cyc) / len(cyc), sum(ic) / len(ic)
+    print(f"\n{'':12s} {'IC':>8s} {'Ciclos':>8s} {'CPI':>6s} {'Tiempo':>10s}")
+    print(f"{'Promedio':12s} {prom_ic:8.1f} {prom_cyc:8.1f} "
+          f"{sum(cyc) / sum(ic):6.3f} {prom_cyc / f_mhz:8.2f} us")
+    print(f"{'Peor caso':12s} {ic[w]:8d} {cyc[w]:8d} "
+          f"{cyc[w] / ic[w]:6.3f} {cyc[w] / f_mhz:8.2f} us   (tick {ticks[w]['k']})")
+
+    print(f"\n{'Ronda':8s} {'T':>8s} {'Ciclos utiles':>14s} {'Peor caso':>10s} {'Holgura':>8s}")
+    for nombre, t_us in ROUNDS.items():
+        util = int((t_us - SPI_US) * f_mhz) - SYNC_CYCLES
+        print(f"{nombre:8s} {t_us:6.0f}us {util:14d} {cyc[w]:10d} {util / cyc[w]:7.1f}x")
 
 
 if __name__ == "__main__":
-    # TODO: leer el log de una corrida real y reportar IC/ciclos/CPI por
-    # tick, caso promedio y peor caso, comparado contra el periodo T de
-    # cada ronda (10 ms / 1 ms / 0.1 ms a 25 MHz, o la frecuencia real que
-    # resulte si se implementa el PLL).
-    pass
+    main()
